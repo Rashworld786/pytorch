@@ -1070,6 +1070,7 @@ class BaseConfigHeuristic(metaclass=BaseHeuristicSingleton):
         pruned_configs = []
         for gemm_config in configs:
             NUM_REG = 255
+            # TODO: should this be different for gfx1250?
             acc_regs = math.ceil(
                 gemm_config.block_m * gemm_config.block_n / (gemm_config.num_warps * 32)
             )
