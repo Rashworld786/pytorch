@@ -30,7 +30,6 @@ import functools
 import inspect
 import logging
 import math
-import os
 import re
 from collections.abc import Callable, Iterable, Sequence
 from contextlib import nullcontext
@@ -244,16 +243,6 @@ def tracing_state_functions() -> dict[Callable[[], Any], bool | None]:
 
 
 bin_ops = dict.fromkeys(["add", "sub", "mul", "div", "sqrt"])
-
-
-@functools.cache
-def _is_tensorify_enabled() -> bool:
-    from torch._utils_internal import justknobs_check
-
-    if (env := os.getenv("TENSORIFY_PYTHON_SCALARS")) is not None:
-        return env not in ("0", "FALSE")
-    return justknobs_check("pytorch/compiler:tensorify_python_scalars")
-
 
 dispatch_key_set_functions = {
     torch._C._dispatch_keys,
@@ -1058,7 +1047,7 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
                 ],
             )
 
-        @register(torch.library.wrap_triton)
+        @register(torch.library.wrap_triton, torch._library.capture_triton)
         def handle_wrap_triton(
             self,
             tx: "InstructionTranslator",
@@ -1066,15 +1055,16 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
             **kwargs: VariableTracker,
         ) -> VariableTracker:
             if len(args) == 1:
-                # torch.library.wrap_triton is a no-op in dynamo
+                # wrap_triton / capture_triton is a no-op in dynamo
                 return args[0]
 
             unimplemented(
                 gb_type="torch.library.wrap_triton call with > 1 args",
                 context=f"args={args}, kwargs={kwargs}",
-                explanation="Attempted to call `torch.library.wrap_triton` with > 1 args. Dynamo does not support this.",
+                explanation="Attempted to call `wrap_triton`/`capture_triton`"
+                " with > 1 args. Dynamo does not support this.",
                 hints=[
-                    "Remove the torch.library.wrap_triton call or its additional args.",
+                    "Remove the wrap_triton/capture_triton call or its additional args.",
                     *graph_break_hints.SUPPORTABLE,
                 ],
             )
@@ -2989,7 +2979,6 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
             and self.value.__name__ in bin_ops
             and any_symints_or_symfloats
             and all_ints_or_floats
-            and not _is_tensorify_enabled()
         ):
             msg = f"""\
 Calling {str(self.value)} on only torch.SymInt arguments is not yet supported.
