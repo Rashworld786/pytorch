@@ -81,59 +81,30 @@ jobs:
 
             The signal extraction is ground truth: the signal transitioned from SUCCESS to FAILURE at the suspect commit. Your job is to determine whether the CODE CHANGE caused the transition, or whether it's coincidence (upstream dependency change, flaky environment, infra issue).
 
-            ## Partial Visibility Warning
+            ## Reasoning principles
 
-            **Events with `status: "pending"` are NORMAL.** The autorevert system dispatches this advisor as soon as a failure is detected on the suspect commit. At that moment, many other commits' workflow jobs for the same signal are still running (`in_progress`) or queued. They appear as `status: "pending"` in the signal pattern.
+            Two principles dominate the failure modes of this advisor. Apply them to every verdict.
 
-            Key implications:
+            *Dual-purpose context.* This advisor runs in two modes — trunk autorevert dispatch and PR-time review. The evidence rules below apply identically in both modes; references to autorevert dispatch, peer commits, the `failed` partition, and signal suppression describe the trunk consequence, not a different reasoning standard.
 
-            - A `pending` event means **"this job has not finished yet"** — it is NOT evidence of a stuck or hanging job, NOT evidence of failure, and NOT evidence of flake.
-            - The `failed` partition will often contain mostly pending events. This is expected: the suspect commit's job failed, which triggered the advisor, but newer commits' jobs for the same signal haven't finished yet.
-            - **Do NOT cite pending events as evidence for any verdict.** Pending events carry zero diagnostic signal about whether the job will ultimately pass or fail.
-            - The only events with diagnostic value for status are those with `status: "failure"` (completed and failed) or `status: "success"` (completed and passed).
-            - **`log_url` for pending events will return empty or incomplete data** — the job hasn't finished writing logs yet. This is expected, not a problem.
-            - If the failed partition has very few completed (failure/success) events, that is a **data-availability limitation**, not an infra problem.
-            - For TEST signals, `events[].test_failures` is the most reliable evidence available — it is recorded **before** the parent `workflow_job` reaches `completed`. Use it whenever it is present, even on `pending` events.
+            **Principle 1 — Mid-flight state is normal; absence of completed evidence is not evidence of failure.** This advisor is dispatched the moment a `failure` is observed on the suspect commit. At that moment, peer commits' jobs for the same signal are typically still running and appear as `events[].status = "pending"`. A `pending` event means *"this job has not finished yet"* — nothing more. It is NOT evidence of failure, NOT evidence of flake, NOT evidence of a stuck/hanging/infra-broken job. The `failed` partition will often be mostly pending; this is expected. Empty `log_url` on a pending event is the ABSENCE of evidence, not evidence of absence. Only events with `status: "failure"` / `status: "success"` (and `events[].test_failures` rows, which land in ClickHouse before `workflow_job` reaches `completed`) carry diagnostic signal. When completed status/log evidence is scarce *and* `test_failures` rows plus code tracing do not establish causality, the correct verdict is `unsure` — never `garbage` from pending-only data, and never described as "stuck" or "hanging".
+
+            **Principle 2 — Causal-chain identifier matches must be structural.** When your reasoning rests on matching one identifier against another — `signal_key` against a marker file under `test/dynamo_expected_failures/<...>`, a failing test against an `expected_failures`/`expected_skips` table entry, a method name against an `@xfail`/`@skip` decorator, or any similar artifact — the match must be STRUCTURAL: full module + class + method (or full namespaced identifier), not bare leaf name. Bare-name overlap across class/module boundaries is coincidence, not evidence. Example: `TestMisc.test_foo` (marker) and `test_linalg.py::TestLinalg.test_foo` (failing test) are different tests despite the shared method name. If the structural identifier does not match, reject *that identifier-based chain*; consider `revert` only if a separate, structurally valid causal chain remains. Otherwise prefer `not_related` over `revert`.
 
             ## Investigation Steps
 
-            1. **Read the suspect commit diff.** Run `git show ${{ inputs.suspect_commit }}` to understand what code changed. Read the modified files to understand the broader context around the changes.
+            1. **Read the suspect commit diff.** `git show ${{ inputs.suspect_commit }}` and read the modified files for context.
+            2. **Analyze the PR.** `gh pr view ${{ inputs.pr_number }} --repo pytorch/pytorch --json title,body,files` to understand intent.
+            3. **Investigate completed failed evidence.** For each event with `status: "failure"` in the failed partition: fetch `log_url`, identify the failing test/build step, read the test source. For TEST signals, also inspect `events[].test_failures` (usable even on pending events per Principle 1). Skip pending events ONLY for job-outcome/status inference — still read their `events[].test_failures` rows for test identity and failure details.
+            4. **Trace the causal chain.** Imports, call paths, class hierarchies, runtime dispatch, indirect dependencies (utility changes can break tests through several layers), runtime behavior (tensor ops, kernel dispatch, autograd, compile paths). Check whether the error / stack trace references the changed code, even indirectly. When the chain rests on an artifact identifier, apply Principle 2.
+            5. **Check for alternative explanations.** Known flaky test (skip/xfail decorators, recent similar failures elsewhere). Infra (OOM, timeout, network, GPU driver). Concurrent commit (timestamps + other recent merges). Signal unreliability (persistent timeouts, environment-dependent flakes, resource exhaustion not caused by any code change).
+            6. **Render your verdict.**
+               - `revert` — plausible causal chain (direct or indirect, but structurally traceable) from the code change to the failure. Confidence reflects how direct and clear the chain is. (Subject to Principle 2: name-only chains do not qualify.)
+               - `not_related` — no plausible causal chain after thorough investigation; the failure has a clear alternative explanation.
+               - `unsure` — investigation is inconclusive. Also the default when completed evidence is scarce per Principle 1.
+               - `garbage` — the signal itself is unreliable; suppress for ~2 hours. Use ONLY with concrete infra evidence in a COMPLETED job's log: HTTP error codes from dependency mirrors, ECR/docker pull failures with specific messages, runner pool exhaustion, GPU driver crash signatures, OOM kills in dmesg. Per Principle 1, NEVER `garbage` based on pending events or empty pending logs.
 
-            2. **Analyze the PR.** Fetch the PR description and understand the intent of the change: `gh pr view ${{ inputs.pr_number }} --repo pytorch/pytorch --json title,body,files`
-
-            3. **Investigate the failed jobs.** For each job in the failed_partition:
-               - Fetch the job logs from the log_url to find error messages, stack traces, and assertion failures
-               - Identify the specific test(s) or build step(s) that failed
-               - Read the relevant test source code in this checkout to understand what the test exercises
-
-            4. **Trace the causal chain.** This is the critical step. Do NOT take shortcuts:
-               - Trace imports, function calls, class hierarchies, and runtime dispatch paths from the changed code to the failing tests
-               - Consider indirect dependencies: a change to a utility function may break tests through several layers of abstraction
-               - Consider runtime behavior: changes to tensor operations, kernel dispatch, autograd behavior, or compilation paths can have non-obvious downstream effects
-               - Check if the error message or stack trace references any of the changed code, even indirectly
-
-            5. **Check for alternative explanations:**
-               - Is this a known flaky test? (Look for skip/xfail decorators, recent similar failures on other commits)
-               - Is this an infrastructure issue? (OOM, timeout, network error, GPU driver issue)
-               - Did a different concurrent commit plausibly cause this? (Check the commit timestamp and other recent merges)
-               - Is this signal fundamentally unreliable? (Persistent timeouts, environment-dependent flakes, resource exhaustion not caused by any code change)
-
-            6. **Render your verdict:**
-               - `revert` — You found a plausible causal chain from the code change to the failure. Confidence should reflect how direct and clear the chain is.
-               - `not_related` — After thorough investigation, there is no plausible causal chain. The failure has a clear alternative explanation.
-               - `unsure` — The investigation is inconclusive. There may be a connection but you cannot confirm it with sufficient confidence.
-               - `garbage` — The signal itself is unreliable and should be temporarily suppressed. Use ONLY when you find **concrete, verifiable infrastructure evidence in completed job logs**: HTTP error codes from dependency mirrors, ECR/docker pull failures with specific error messages, runner pool exhaustion errors, GPU driver crash signatures, OOM kills visible in dmesg output, or similar signal-wide infra failures. This tells autorevert to ignore this signal for ~2 hours.
-
-            **`garbage` guardrails — read carefully, this is the most common failure mode of this advisor:**
-
-            - **The most important rule: a `garbage` verdict requires evidence from a `completed` job — i.e., an event with `status: "failure"` (or `status: "success"`) whose `log_url` returned non-empty content with a concrete infra error.** Without that, you do not have evidence; you have a guess.
-            - **NEVER issue `garbage` based on pending events alone.** A failed partition that is mostly `pending` is the normal state at dispatch time, not evidence of infra problems or hanging jobs. The jobs are still running.
-            - **NEVER issue `garbage` because you couldn't fetch logs for pending jobs.** That's expected — the jobs haven't finished writing logs yet. Empty `log_url` from a pending event is not evidence; it is the absence of evidence.
-            - **NEVER call jobs "stuck" or "hanging" based on `status: "pending"`.** "Pending" means "not yet completed", not "hung".
-            - If you cannot find concrete infra evidence in completed job logs, default to `unsure`.
-            - For TEST signals, prefer trusting `events[].test_failures` and the `signal_key`-identified test over speculating about job-level infra. The signal extraction has already pinned which test failed; you do not need to re-derive that.
-
-            When in doubt between `unsure` and `not_related`, prefer `unsure`. When in doubt between `garbage` and `unsure`, prefer `unsure`. A false `not_related` verdict is more costly than an `unsure` (which just lets autorevert continue its normal restart-to-confirm flow). A false `garbage` suppresses the signal for ~2 hours, potentially delaying a legitimate revert.
+            When in doubt between `unsure` and `not_related`, prefer `unsure`. When in doubt between `garbage` and `unsure`, prefer `unsure`. A false `not_related` can prematurely dismiss a real regression; an `unsure` just lets autorevert continue its normal restart-to-confirm flow. A false `garbage` suppresses the signal for ~2h and may delay a legitimate revert. A false `revert` from a name-only chain costs reverting a clean PR.
 
             IMPORTANT: Be thorough. Read actual code. Trace actual call paths. Do not guess based on file names alone.
 
