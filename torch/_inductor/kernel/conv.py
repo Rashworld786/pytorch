@@ -595,19 +595,18 @@ def convolution(
         kwargs["bias"] = None  # type: ignore[typeddict-unknown-key]
         ordered_kwargs_for_cpp_kernel.insert(0, "bias")
     else:
-        bias_tensor = bias
-        # Bias can arrive as a generic View (for example from flatten()).
-        # Canonicalize it to a layout-backed contiguous tensor before we
-        # freeze layout for the backend conv call.
-        if isinstance(bias_tensor.data, ir.BaseView) and not isinstance(
-            bias_tensor.data, ir.ReinterpretView
-        ):
-            bias_tensor = TensorBox(ir.ExternKernel.require_contiguous(bias_tensor))
+        bias = ir.ExternKernel.realize_input(bias)  # type: ignore[assignment]
+        assert bias is not None
 
-        args = [x, weight, bias_tensor]
-        bias_tensor.realize()
-        bias_tensor.freeze_layout()
-        V.graph.sizevars.guard_int_seq(bias_tensor.get_size())
+        # Generic views need a layout-backed buffer before freeze_layout().
+        if isinstance(bias.data, ir.BaseView) and not isinstance(
+            bias.data, ir.ReinterpretView
+        ):
+            bias = TensorBox(ir.ExternKernel.require_contiguous(bias))
+
+        args = [x, weight, bias]
+        bias.freeze_layout()
+        V.graph.sizevars.guard_int_seq(bias.get_size())
 
     choices = []
     if torch._inductor.utils._use_conv_autotune_backend("ATEN"):
