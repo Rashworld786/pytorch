@@ -4196,7 +4196,7 @@ class PythonWrapperCodegen(CodeGen):
         self.writeline("if not should_loop:")
         if stack_output:
             # Handle the case when loop never executes
-            if not len(outer_carried_inputs):
+            if not outer_carried_inputs:
                 self.writeline(EnterSubgraphLine(self, while_loop.body_subgraph.graph))
                 self.writeline("pass")
                 self.writeline(ExitSubgraphLine(self))
@@ -4210,7 +4210,7 @@ class PythonWrapperCodegen(CodeGen):
                     )
                     self.writeline(ExitSubgraphLine(self))
         else:
-            if not len(outer_carried_inputs):
+            if not outer_carried_inputs:
                 self.writeline(EnterSubgraphLine(self, while_loop.body_subgraph.graph))
                 self.writeline("pass")
                 self.writeline(ExitSubgraphLine(self))
@@ -4233,7 +4233,7 @@ class PythonWrapperCodegen(CodeGen):
         # Collect outputs if enabled
         if stack_output:
             self.writeline(EnterSubgraphLine(self, while_loop.body_subgraph.graph))
-            if not len(outer_carried_inputs):
+            if not outer_carried_inputs:
                 self.writeline("pass")
             else:
                 for i in range(len(outer_carried_inputs)):
