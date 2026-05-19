@@ -1282,6 +1282,8 @@ def get_reduction_combine_fn(
 
 @ir_dataclass
 class Reduction(Loops):
+    """Loop IR node for reductions, including split multi-stage reductions."""
+
     reduction_ranges: Sequence[_IntLike]
     reduction_type: ReductionType
     # self.dtype represents the dst dtype
@@ -1402,7 +1404,11 @@ class Reduction(Loops):
 
         props = DeviceProperties.create(device)
         num_sm = props.multi_processor_count
+        warp_size = props.warp_size if props.warp_size is not None else 32
         min_elements_per_thread = 32
+        max_elements_per_thread = 512
+        num_warps = 8
+        num_threads = warp_size * num_warps
         if should_split:
             inner_reduction_splits: Callable[[int, int], int] = functools.partial(
                 V.choices.reduction_split_factor, device, inner_reduction=True
@@ -1420,9 +1426,97 @@ class Reduction(Loops):
 
             outer_reduction_splits = inner_reduction_splits
 
+        def has_pointwise_sibling_consumer() -> bool:
+            current_node = V.graph.current_node
+            if current_node is None or not current_node.args:
+                return False
+
+            input_arg = current_node.args[0]
+            if not isinstance(input_arg, torch.fx.Node):
+                return False
+
+            def is_pointwise_node(node: torch.fx.Node) -> bool:
+                return node.op == "call_function" and torch.Tag.pointwise in getattr(
+                    node.target, "tags", ()
+                )
+
+            nodes_to_check: OrderedSet[torch.fx.Node] = OrderedSet()
+            reduction_producers: OrderedSet[torch.fx.Node] = OrderedSet()
+            queue: list[torch.fx.Node] = [input_arg]
+            while queue:
+                node = queue.pop()
+                if node in nodes_to_check:
+                    continue
+                nodes_to_check.add(node)
+
+                if not is_pointwise_node(node):
+                    continue
+                reduction_producers.add(node)
+                for arg in node.args:
+                    if isinstance(arg, torch.fx.Node):
+                        queue.append(arg)
+
+            ignored_users = reduction_producers | OrderedSet([current_node])
+            for node in nodes_to_check:
+                for user in node.users:
+                    if user in ignored_users or not is_pointwise_node(user):
+                        continue
+                    if any(next_user.op != "output" for next_user in user.users):
+                        return True
+            return False
+
+        def split_aligned_with_reduction_ranges(split: _IntLike) -> _IntLike:
+            if (
+                not _is_static(split)
+                or int(split) <= 1
+                or numel_hint != 1
+                or len(reduction_ranges) <= 1
+                or not all(_is_static(r) for r in reduction_ranges)
+                or not has_pointwise_sibling_consumer()
+            ):
+                return split
+
+            reduction_dims = [int(r) for r in reduction_ranges]
+            if any(dim <= 0 for dim in reduction_dims):
+                return split
+
+            reduction_numel_from_ranges = functools.reduce(
+                operator.mul, reduction_dims, 1
+            )
+            if reduction_numel_from_ranges != reduction_numel_hint:
+                return split
+
+            split_int = int(split)
+            # Matching an original reduction-dimension prefix can leave each
+            # block with more or less work than the default split heuristic,
+            # but this is worthwhile when it avoids a separate full-tensor
+            # pointwise read.
+            min_block_size = num_threads * min_elements_per_thread // 8
+            max_block_size = num_threads * max_elements_per_thread * 2
+
+            best_split = split_int
+            best_ratio = float("inf")
+            prefix = 1
+            for dim in reduction_dims[:-1]:
+                prefix *= dim
+                if prefix <= 1:
+                    continue
+                block_size = reduction_numel_from_ranges // prefix
+                if not (min_block_size <= block_size <= max_block_size):
+                    continue
+
+                ratio = max(prefix, split_int) / min(prefix, split_int)
+                # Bound both fanout increases and decreases from alignment.
+                if ratio <= 16 and ratio < best_ratio:
+                    best_split = prefix
+                    best_ratio = ratio
+
+            return best_split
+
         # easy cases
         if numel_hint == 1:
             split = inner_reduction_splits(reduction_numel_hint, numel_hint)
+            split = split_aligned_with_reduction_ranges(split)
             if split == 1:
                 # No need to split.
                 return ReductionHint.INNER, split
