@@ -1862,7 +1862,8 @@ Tensor& index_select_out_cpu_(
           ScalarType::Half,
           ScalarType::Bool,
           ScalarType::BFloat16,
-          AT_EXPAND(AT_FLOAT8_TYPES));
+          AT_EXPAND(AT_FLOAT8_TYPES),
+          AT_EXPAND(AT_BAREBONES_UNSIGNED_TYPES));
     }
   }
 
