@@ -4157,6 +4157,11 @@ class PythonWrapperCodegen(CodeGen):
                     subgraph, outer_inputs, outer_outputs
                 )
 
+        def codegen_empty_carried_subgraph():
+            self.writeline(EnterSubgraphLine(self, while_loop.body_subgraph.graph))
+            self.writeline("pass")
+            self.writeline(ExitSubgraphLine(self))
+
         name = while_loop.get_name()
         outer_carried_inputs = [
             buf.codegen_reference() for buf in while_loop.carried_inputs
@@ -4194,33 +4199,18 @@ class PythonWrapperCodegen(CodeGen):
         )
         self.writeline(f"should_loop = {cond_outer_outputs[0]}")
         self.writeline("if not should_loop:")
-        if stack_output:
-            # Handle the case when loop never executes
-            if not outer_carried_inputs:
-                self.writeline(EnterSubgraphLine(self, while_loop.body_subgraph.graph))
-                self.writeline("pass")
-                self.writeline(ExitSubgraphLine(self))
-            else:
-                for i, carried_input in enumerate(outer_carried_inputs):
-                    self.writeline(
-                        EnterSubgraphLine(self, while_loop.body_subgraph.graph)
-                    )
-                    self.writeline(
-                        f"{name}[{i}] = {carried_input}.unsqueeze(0).clone()"
-                    )
-                    self.writeline(ExitSubgraphLine(self))
+        if not outer_carried_inputs:
+            codegen_empty_carried_subgraph()
         else:
-            if not outer_carried_inputs:
+            clone_line = (
+                "{name}[{i}] = {inp}.unsqueeze(0).clone()"
+                if stack_output
+                else "{name}[{i}] = {inp}.clone()"
+            )
+            for i, carried_input in enumerate(outer_carried_inputs):
                 self.writeline(EnterSubgraphLine(self, while_loop.body_subgraph.graph))
-                self.writeline("pass")
+                self.writeline(clone_line.format(name=name, i=i, inp=carried_input))
                 self.writeline(ExitSubgraphLine(self))
-            else:
-                for i, carried_input in enumerate(outer_carried_inputs):
-                    self.writeline(
-                        EnterSubgraphLine(self, while_loop.body_subgraph.graph)
-                    )
-                    self.writeline(f"{name}[{i}] = {carried_input}.clone()")
-                    self.writeline(ExitSubgraphLine(self))
 
         self.writeline("while should_loop:")
         # Body execution
