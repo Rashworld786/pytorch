@@ -17,8 +17,6 @@ from torch.testing._internal.inductor_utils import GPU_TYPE, HAS_GPU
 # set so that metrics appear
 torch._logging.set_logs(inductor_metrics=True)
 
-DO_PERF_TEST = os.environ.get("DO_PERF_TEST") == "1"
-
 
 class TestScatterOpt(TestCase):
     def setUp(self):
@@ -161,10 +159,7 @@ class TestScatterOpt(TestCase):
           ms=42.768, peak_mem=7.227 GB
         """
         B, T, D, V = 32, 1024, 768, 50257
-        if not DO_PERF_TEST:
-            # use a smaller V if not doing perf test to avoid OOM
-            # in CI
-            V = V // 100
+
         ref_model = nn.Linear(D, V).to(torch.bfloat16)
         opt_model = copy.deepcopy(ref_model)
         ce = nn.CrossEntropyLoss()
@@ -186,17 +181,17 @@ class TestScatterOpt(TestCase):
 
         self.check_metric()
 
-        if DO_PERF_TEST:
-            if GPU_TYPE == "xpu":
-                raise unittest.SkipTest(
-                    "torch.xpu.reset_peak_memory_stats not implemented."
-                )
-            torch.cuda.reset_peak_memory_stats()
-            for _ in range(3):
-                opt_f(opt_model, x, label)
-            ms = benchmarker.benchmark_gpu(lambda: opt_f(opt_model, x, label))
-            peak_mem = torch.cuda.max_memory_allocated() / 10**9
-            print(f"{ms=:.3f}, {peak_mem=:.3f} GB")
+        if GPU_TYPE == "xpu":
+            raise unittest.SkipTest(
+                "torch.xpu.reset_peak_memory_stats not implemented."
+            )
+        
+        torch.cuda.reset_peak_memory_stats()
+        for _ in range(3):
+            opt_f(opt_model, x, label)
+        ms = benchmarker.benchmark_gpu(lambda: opt_f(opt_model, x, label))
+        peak_mem = torch.cuda.max_memory_allocated() / 10**9
+        print(f"{ms=:.3f}, {peak_mem=:.3f} GB")
 
 
 class TestPartitionedScatterOpt(TestCase):
@@ -661,10 +656,6 @@ class TestPartitionedScatterOpt(TestCase):
         )
 
 
-
-    # -----------------------------------------------------------------------
-    # Performance — requires DO_PERF_TEST=1
-    # -----------------------------------------------------------------------
 
     @unittest.skipUnless(HAS_GPU, "requires GPU")
     def test_perf_atomic_contention(self):
