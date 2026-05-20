@@ -2301,7 +2301,12 @@ class GraphLowering(torch.fx.Interpreter):
                         i1 = min(missing, key=str)
                         self.ras_by_symbol.setdefault(i1, []).append(ra)
                     else:
-                        make_assert(ra.expr, f"{ra.expr}")
+                        # Substitute backed symbol replacements so the
+                        # generated code only references defined symbols.
+                        expr = ra.expr.xreplace(shape_env.replacements)
+                        if expr is sympy.true:
+                            continue
+                        make_assert(expr, f"{expr}")
 
     def validate_can_generate_cpp_wrapper(self) -> None:
         if config.disable_cpp_codegen:
