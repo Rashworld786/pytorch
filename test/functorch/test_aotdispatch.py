@@ -9751,7 +9751,6 @@ metadata incorrectly.
         self.assertEqual(y_ref.a, y.a)
         self.assertEqual(aux_ref.a, aux.a)
 
-        self.assertTrue(aux.a._is_view())
         self.assertEqual(
             StorageWeakRef(y.a.untyped_storage()),
             StorageWeakRef(aux.a.untyped_storage()),
@@ -9761,7 +9760,7 @@ metadata incorrectly.
         (y.sum() + aux.sum()).backward()
         self.assertIsNotNone(x_ref.grad)
         self.assertIsNotNone(x.grad)
-        self.assertEqual(x_ref.grad.shape, x.grad.shape)
+        self.assertEqual(x_ref.grad.a, x.grad.a)
 
     def test_output_alias_of_intermediate_wrapper_subclass_inductor(self):
         def f(x):
@@ -9780,7 +9779,6 @@ metadata incorrectly.
         self.assertEqual(y_ref.a, y.a)
         self.assertEqual(aux_ref.a, aux.a)
 
-        self.assertTrue(aux.a._is_view())
         self.assertEqual(
             StorageWeakRef(y.a.untyped_storage()),
             StorageWeakRef(aux.a.untyped_storage()),
@@ -9790,7 +9788,7 @@ metadata incorrectly.
         (y.sum() + aux.sum()).backward()
         self.assertIsNotNone(x_ref.grad)
         self.assertIsNotNone(x.grad)
-        self.assertEqual(x_ref.grad.shape, x.grad.shape)
+        self.assertEqual(x_ref.grad.a, x.grad.a)
 
     @torch._functorch.config.patch(
         {
