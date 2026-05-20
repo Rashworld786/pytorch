@@ -1869,6 +1869,11 @@ class AOTInductorTestsTemplate:
                 torch.randn(large_batch, K, N, device=self.device, dtype=dtype),
             ),
         )
+        # fp16 K=64 BMM: eager (hipBLASLt/rocBLAS/CK) and the Triton template
+        # round the K reduction in different fp32 orders, producing up to ~1
+        # fp16 ULP per-element differences. Use the fp16-appropriate tolerance
+        # convention shared with test_mix_order_reduction etc. The default 1e-4
+        # is below 1 fp16 ULP for the expected output magnitudes.
         self.check_model_with_multiple_inputs(
             model,
             list_example_inputs,
@@ -1877,6 +1882,7 @@ class AOTInductorTestsTemplate:
                 "max_autotune_gemm_backends": "TRITON",
             },
             dynamic_shapes=dynamic_shapes,
+            tol=1e-2,
         )
 
     @skipIfWindows(msg="TODO: (xuhancn) confirm, Crash: access violation")
