@@ -1303,6 +1303,14 @@ class OptimizeContext(_TorchDynamoContext):
             isolate_recompiles=isolate_recompiles,
         )
 
+        if not export:
+            def call_compile_session_state_ctx() -> Callable[[], Any]:
+                ctx = torch.compiler._compile_session_context()
+                ctx.__enter__()
+                return functools.partial(ctx.__exit__, None, None, None)
+
+            self.enter_exit_hooks.append(call_compile_session_state_ctx)
+
         if config.compiled_autograd:
             _dynamic = self._dynamic
             if _dynamic is None:
