@@ -1869,7 +1869,6 @@ class AOTInductorTestsTemplate:
                 torch.randn(large_batch, K, N, device=self.device, dtype=dtype),
             ),
         )
-
         self.check_model_with_multiple_inputs(
             model,
             list_example_inputs,
