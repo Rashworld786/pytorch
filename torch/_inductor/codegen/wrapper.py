@@ -4157,11 +4157,6 @@ class PythonWrapperCodegen(CodeGen):
                     subgraph, outer_inputs, outer_outputs
                 )
 
-        def codegen_empty_carried_subgraph():
-            self.writeline(EnterSubgraphLine(self, while_loop.body_subgraph.graph))
-            self.writeline("pass")
-            self.writeline(ExitSubgraphLine(self))
-
         name = while_loop.get_name()
         outer_carried_inputs = [
             buf.codegen_reference() for buf in while_loop.carried_inputs
@@ -4200,7 +4195,9 @@ class PythonWrapperCodegen(CodeGen):
         self.writeline(f"should_loop = {cond_outer_outputs[0]}")
         self.writeline("if not should_loop:")
         if not outer_carried_inputs:
-            codegen_empty_carried_subgraph()
+            self.writeline(EnterSubgraphLine(self, while_loop.body_subgraph.graph))
+            self.writeline("pass")
+            self.writeline(ExitSubgraphLine(self))
         else:
             clone_line = (
                 "{name}[{i}] = {inp}.unsqueeze(0).clone()"
