@@ -6932,7 +6932,6 @@ class CommonTemplate:
 
         self.common(fn, (x,))
 
-    @xfail_if_mps
     def test_complex_real_imag_conj(self):
         # Regression test for https://github.com/pytorch/pytorch/issues/171665
         # Tests that extracting real/imag from conjugated tensors works when compiled.
@@ -10012,6 +10011,7 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
 
         self.assertEqual(eager_result.stride(), fake_result.stride())
 
+    @skip_if_triton_cpu
     def test_like_channels_last(self):
         def foo():
             randn = torch.randn((4, 3, 8, 8), device=self.device, dtype=torch.float32)
